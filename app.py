@@ -1016,3 +1016,11 @@ def create_app():
             logger.error(f"Error in before_request: {str(e)}", exc_info=True)
     
     return app
+
+# Create the app instance for Gunicorn
+app = create_app()
+
+if __name__ == '__main__':
+    # This allows running the app directly with python app.py for development
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=os.getenv('FLASK_ENV') == 'development')
