@@ -13,8 +13,6 @@ from itsdangerous import URLSafeTimedSerializer
 from dotenv import load_dotenv
 import atexit
 from functools import wraps
-from mailersend_email import init_email_config
-from scheduler_setup import init_scheduler
 from models import create_user, get_user_by_email, get_user, get_financial_health, get_budgets, get_bills, get_net_worth, get_emergency_funds, get_learning_progress, get_quiz_results, to_dict_financial_health, to_dict_budget, to_dict_bill, to_dict_net_worth, to_dict_emergency_fund, to_dict_learning_progress, to_dict_quiz_result, initialize_database
 from utils import trans_function, is_valid_email, get_mongo_db, close_mongo_db, get_limiter, get_mail, requires_role, check_coin_balance
 from session_utils import create_anonymous_session
@@ -58,7 +56,7 @@ def admin_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if not current_user.is_authenticated:
-            return redirect(url_for('users_bp.login'))
+            return redirect(url_for('login'))
         if current_user.role != 'admin':
             flash(trans('no_permission', default='You do not have permission to access this page.'), 'danger')
             return redirect(url_for('index'))
@@ -70,7 +68,7 @@ def custom_login_required(f):
     def decorated_function(*args, **kwargs):
         if current_user.is_authenticated or session.get('is_anonymous', False):
             return f(*args, **kwargs)
-        return redirect(url_for('users_bp.login', next=request.url))
+        return redirect(url_for('login', next=request.url))
     return decorated_function
 
 def ensure_session_id(f):
@@ -119,6 +117,8 @@ def check_mongodb_connection(mongo_client, app):
         except Exception as e:
             logger.error(f"MongoDB client is closed: {str(e)}")
             try:
+                from pymongo import MongoClient
+                import certifi
                 new_client = MongoClient(
                     app.config['MONGO_URI'],
                     connect=False,
@@ -145,6 +145,8 @@ def setup_session(app):
     try:
         if not check_mongodb_connection(mongo_client, app):
             logger.error("MongoDB client is not open, attempting to reinitialize")
+            from pymongo import MongoClient
+            import certifi
             mongo_client_new = MongoClient(
                 app.config['MONGO_URI'],
                 connect=False,
@@ -252,7 +254,7 @@ def create_app():
     
     # Configure Flask-Login
     login_manager.init_app(app)
-    login_manager.login_view = 'users_bp.login'
+    login_manager.login_view = 'login'
     login_manager.login_message = trans('login_required', default='Please log in to access this page.')
     login_manager.login_message_category = 'info'
     
@@ -269,26 +271,10 @@ def create_app():
             logger.error(f"Error loading user {user_id}: {str(e)}", exc_info=True)
             return None
     
-    # Initialize scheduler
-    try:
-        scheduler = init_scheduler(app, get_mongo_db())
-        app.config['SCHEDULER'] = scheduler
-        logger.info("Scheduler initialized successfully")
-        def shutdown_scheduler():
-            try:
-                if scheduler and scheduler.running:
-                    scheduler.shutdown(wait=True)
-                    logger.info("Scheduler shutdown successfully")
-            except Exception as e:
-                logger.error(f"Error shutting down scheduler: {str(e)}", exc_info=True)
-        atexit.register(shutdown_scheduler)
-    except Exception as e:
-        logger.error(f"Failed to initialize scheduler: {str(e)}", exc_info=True)
-    
     # Initialize database
     with app.app_context():
         initialize_database(app)
-        admin_email = os.environ.get('ADMIN_EMAIL', 'ficore@gmail.com')
+        admin_email = os.environ.get('ADMIN_EMAIL', 'ficorerecords@gmail.com')
         admin_password = os.environ.get('ADMIN_PASSWORD', 'Admin123!')
         admin_username = os.environ.get('ADMIN_USERNAME', 'admin')
         admin_user = get_user_by_email(get_mongo_db(), admin_email)
@@ -309,22 +295,7 @@ def create_app():
         else:
             logger.info(f"Admin user already exists with email: {admin_email}")
     
-    # Register blueprints - Existing accounting blueprints
-    from users.routes import users_bp
-    from agents.routes import agents_bp
-    from common.routes import common_bp
-    from coins.routes import coins_bp
-    from creditors.routes import creditors_bp
-    from dashboard.routes import dashboard_bp
-    from debtors.routes import debtors_bp
-    from inventory.routes import inventory_bp
-    from payments.routes import payments_bp
-    from receipts.routes import receipts_bp
-    from reports.routes import reports_bp
-    from settings.routes import settings_bp
-    from admin.routes import admin_bp
-    
-    # Register new personal finance blueprints
+    # Register personal finance blueprints
     from personal.bill import bill_bp
     from personal.budget import budget_bp
     from personal.emergency_fund import emergency_fund_bp
@@ -332,21 +303,6 @@ def create_app():
     from personal.learning_hub import learning_hub_bp
     from personal.net_worth import net_worth_bp
     from personal.quiz import quiz_bp
-    
-    # Register existing accounting blueprints
-    app.register_blueprint(users_bp, url_prefix='/users')
-    app.register_blueprint(agents_bp, url_prefix='/agents')
-    app.register_blueprint(common_bp, url_prefix='/common')
-    app.register_blueprint(coins_bp, url_prefix='/coins')
-    app.register_blueprint(creditors_bp, url_prefix='/creditors')
-    app.register_blueprint(dashboard_bp, url_prefix='/dashboard')
-    app.register_blueprint(debtors_bp, url_prefix='/debtors')
-    app.register_blueprint(inventory_bp, url_prefix='/inventory')
-    app.register_blueprint(payments_bp, url_prefix='/payments')
-    app.register_blueprint(receipts_bp, url_prefix='/receipts')
-    app.register_blueprint(reports_bp, url_prefix='/reports')
-    app.register_blueprint(settings_bp, url_prefix='/settings')
-    app.register_blueprint(admin_bp, url_prefix='/admin')
     
     # Register personal finance blueprints
     app.register_blueprint(bill_bp, url_prefix='/personal/bill')
@@ -493,12 +449,8 @@ def create_app():
         if request.method == 'HEAD':
             return '', 200
         if current_user.is_authenticated:
-            if current_user.role == 'agent':
-                return redirect(url_for('agents_bp.dashboard'))
-            elif current_user.role == 'trader':
-                return redirect(url_for('dashboard_bp.index'))
-            elif current_user.role == 'admin':
-                return redirect(url_for('admin_bp.dashboard'))
+            if current_user.role == 'admin':
+                return redirect(url_for('general_dashboard'))
             elif current_user.role == 'personal':
                 return redirect(url_for('general_dashboard'))
             else:
@@ -657,173 +609,6 @@ def create_app():
         response.headers['X-Content-Type-Options'] = 'nosniff'
         return response
     
-    # Existing accounting API routes
-    @app.route('/api/debt-summary')
-    @login_required
-    def debt_summary():
-        try:
-            db = get_mongo_db()
-            user_id = current_user.id
-            creditors_pipeline = [
-                {'$match': {'user_id': user_id, 'type': 'creditor'}},
-                {'$group': {'_id': None, 'total': {'$sum': '$amount_owed'}}}
-            ]
-            creditors_result = list(db.records.aggregate(creditors_pipeline))
-            total_i_owe = creditors_result[0]['total'] if creditors_result else 0
-            debtors_pipeline = [
-                {'$match': {'user_id': user_id, 'type': 'debtor'}},
-                {'$group': {'_id': None, 'total': {'$sum': '$amount_owed'}}}
-            ]
-            debtors_result = list(db.records.aggregate(debtors_pipeline))
-            total_i_am_owed = debtors_result[0]['total'] if debtors_result else 0
-            return jsonify({
-                'totalIOwe': total_i_owe,
-                'totalIAmOwed': total_i_am_owed
-            })
-        except Exception as e:
-            logger.error(f"Error fetching debt summary: {str(e)}")
-            return jsonify({'error': 'Failed to fetch debt summary'}), 500
-    
-    @app.route('/api/cashflow-summary')
-    @login_required
-    def cashflow_summary():
-        try:
-            db = get_mongo_db()
-            user_id = current_user.id
-            now = datetime.utcnow()
-            month_start = datetime(now.year, now.month, 1)
-            next_month = month_start.replace(month=month_start.month + 1) if month_start.month < 12 else month_start.replace(year=month_start.year + 1, month=1)
-            receipts_pipeline = [
-                {'$match': {'user_id': user_id, 'type': 'receipt', 'created_at': {'$gte': month_start, '$lt': next_month}}},
-                {'$group': {'_id': None, 'total': {'$sum': '$amount'}}}
-            ]
-            receipts_result = list(db.cashflows.aggregate(receipts_pipeline))
-            total_receipts = receipts_result[0]['total'] if receipts_result else 0
-            payments_pipeline = [
-                {'$match': {'user_id': user_id, 'type': 'payment', 'created_at': {'$gte': month_start, '$lt': next_month}}},
-                {'$group': {'_id': None, 'total': {'$sum': '$amount'}}}
-            ]
-            payments_result = list(db.cashflows.aggregate(payments_pipeline))
-            total_payments = payments_result[0]['total'] if payments_result else 0
-            net_cashflow = total_receipts - total_payments
-            return jsonify({
-                'netCashflow': net_cashflow,
-                'totalReceipts': total_receipts,
-                'totalPayments': total_payments
-            })
-        except Exception as e:
-            logger.error(f"Error fetching cashflow summary: {str(e)}")
-            return jsonify({'error': 'Failed to fetch cashflow summary'}), 500
-    
-    @app.route('/api/inventory-summary')
-    @login_required
-    def inventory_summary():
-        try:
-            db = get_mongo_db()
-            user_id = current_user.id
-            pipeline = [
-                {'$match': {'user_id': user_id}},
-                {'$addFields': {
-                    'item_value': {
-                        '$multiply': [
-                            '$qty',
-                            {'$ifNull': ['$buying_price', 0]}
-                        ]
-                    }
-                }},
-                {'$group': {'_id': None, 'totalValue': {'$sum': '$item_value'}}}
-            ]
-            result = list(db.inventory.aggregate(pipeline))
-            total_value = result[0]['totalValue'] if result else 0
-            return jsonify({
-                'totalValue': total_value
-            })
-        except Exception as e:
-            logger.error(f"Error fetching inventory summary: {str(e)}")
-            return jsonify({'error': 'Failed to fetch inventory summary'}), 500
-    
-    @app.route('/api/recent-activity')
-    @login_required
-    def recent_activity():
-        try:
-            db = get_mongo_db()
-            user_id = current_user.id
-            activities = []
-            recent_records = list(db.records.find(
-                {'user_id': user_id}
-            ).sort('created_at', -1).limit(3))
-            for record in recent_records:
-                activity_type = 'debt_added'
-                description = f"Added {record['type']}: {record['name']}"
-                activities.append({
-                    'type': activity_type,
-                    'description': description,
-                    'amount': record['amount_owed'],
-                    'timestamp': record['created_at']
-                })
-            recent_cashflows = list(db.cashflows.find(
-                {'user_id': user_id}
-            ).sort('created_at', -1).limit(3))
-            for cashflow in recent_cashflows:
-                activity_type = 'money_in' if cashflow['type'] == 'receipt' else 'money_out'
-                description = f"{'Received' if cashflow['type'] == 'receipt' else 'Paid'} {cashflow['party_name']}"
-                activities.append({
-                    'type': activity_type,
-                    'description': description,
-                    'amount': cashflow['amount'],
-                    'timestamp': cashflow['created_at']
-                })
-            activities.sort(key=lambda x: x['timestamp'], reverse=True)
-            activities = activities[:5]
-            for activity in activities:
-                activity['timestamp'] = activity['timestamp'].isoformat()
-            return jsonify(activities)
-        except Exception as e:
-            logger.error(f"Error fetching recent activity: {str(e)}")
-            return jsonify({'error': 'Failed to fetch recent activity'}), 500
-    
-    @app.route('/api/notifications/count')
-    @login_required
-    def notification_count():
-        try:
-            db = get_mongo_db()
-            user_id = current_user.id
-            count = db.reminder_logs.count_documents({
-                'user_id': user_id,
-                'read_status': False
-            })
-            return jsonify({'count': count})
-        except Exception as e:
-            logger.error(f"Error fetching notification count: {str(e)}")
-            return jsonify({'error': 'Failed to fetch notification count'}), 500
-    
-    @app.route('/api/notifications')
-    @login_required
-    def notifications():
-        try:
-            db = get_mongo_db()
-            user_id = current_user.id
-            notifications = list(db.reminder_logs.find({
-                'user_id': user_id
-            }).sort('sent_at', -1).limit(10))
-            notification_ids = [n['notification_id'] for n in notifications if not n.get('read_status', False)]
-            if notification_ids:
-                db.reminder_logs.update_many(
-                    {'notification_id': {'$in': notification_ids}},
-                    {'$set': {'read_status': True}}
-                )
-            result = [{
-                'id': str(n['notification_id']),
-                'message': n['message'],
-                'type': n['type'],
-                'timestamp': n['sent_at'].isoformat(),
-                'read': n.get('read_status', False)
-            } for n in notifications]
-            return jsonify(result)
-        except Exception as e:
-            logger.error(f"Error fetching notifications: {str(e)}")
-            return jsonify({'error': 'Failed to fetch notifications'}), 500
-    
     @app.route('/feedback', methods=['GET', 'POST'])
     @ensure_session_id
     def feedback():
@@ -831,13 +616,6 @@ def create_app():
         logger.info("Handling feedback")
         tool_options = [
             ['profile', trans('profile_section', default='Profile')],
-            ['coins', trans('coins_section', default='Coins')],
-            ['debtors', trans('debtors_section', default='People')],
-            ['creditors', trans('creditors_section')],
-            ['receipts', trans('receipts_section', default='Receipts')],
-            ['payment', trans('payments_section', default='Payments')],
-            ['inventory', trans('inventory_section', default='Inventory')],
-            ['report', trans('report_section', default='Reports')],
             ['financial_health', trans('financial_health_section', default='Financial Health')],
             ['budget', trans('budget_section', default='Budget')],
             ['bill', trans('bill_section', default='Bill')],
@@ -861,19 +639,6 @@ def create_app():
                     logger.error(f"Invalid rating: {rating}")
                     flash(trans('error_feedback_rating', default='Please provide a rating between 1 and 5'), 'danger')
                     return render_template('personal/GENERAL/feedback.html', t=trans, lang=lang, tool_options=tool_options)
-                if current_user.is_authenticated:
-                    from coins.routes import get_user_query
-                    query = get_user_query(str(current_user.id))
-                    result = get_mongo_db().users.update_one(query, {'$inc': {'coin_balance': -1}})
-                    if result.matched_count == 0:
-                        raise ValueError(f"No user found for ID {current_user.id}")
-                    get_mongo_db().coin_transactions.insert_one({
-                        'user_id': str(current_user.id),
-                        'amount': -1,
-                        'type': 'spend',
-                        'ref': f"FEEDBACK_{datetime.utcnow().isoformat()}",
-                        'date': datetime.utcnow()
-                    })
                 feedback_entry = {
                     'user_id': current_user.id if current_user.is_authenticated else None,
                     'session_id': session.get('sid', 'no-session-id'),
@@ -883,38 +648,15 @@ def create_app():
                     'timestamp': datetime.utcnow()
                 }
                 create_feedback(get_mongo_db(), feedback_entry)
-                get_mongo_db().audit_logs.insert_one({
-                    'admin_id': 'system',
-                    'action': 'submit_feedback',
-                    'details': {'user_id': str(current_user.id) if current_user.is_authenticated else None, 'tool_name': tool_name},
-                    'timestamp': datetime.utcnow()
-                })
                 logger.info(f"Feedback submitted: tool={tool_name}, rating={rating}, session={session.get('sid', 'no-session-id')}")
                 flash(trans('success_feedback', default='Thank you for your feedback!'), 'success')
                 return redirect(url_for('index'))
-            except ValueError as e:
-                logger.error(f"User not found: {str(e)}")
-                flash(trans('user_not_found', default='User not found'), 'danger')
             except Exception as e:
                 logger.error(f"Error processing feedback: {str(e)}", exc_info=True)
                 flash(trans('error_feedback', default='Error occurred during feedback submission'), 'danger')
                 return render_template('personal/GENERAL/feedback.html', t=trans, lang=lang, tool_options=tool_options), 500
         logger.info("Rendering feedback index template")
         return render_template('personal/GENERAL/feedback.html', t=trans, lang=lang, tool_options=tool_options)
-    
-    @app.route('/setup', methods=['GET'])
-    @limiter.limit("10 per minute")
-    def setup_database_route():
-        setup_key = request.args.get('key')
-        if setup_key != os.getenv('SETUP_KEY', 'setup-secret'):
-            return render_template('errors/403.html', content=trans('forbidden_access', default='Access denied')), 403
-        try:
-            initialize_database(app)
-            flash(trans('database_setup_success', default='Database setup successful'), 'success')
-            return redirect(url_for('index'))
-        except Exception as e:
-            flash(trans('database_setup_error', default='An error occurred during database setup'), 'danger')
-            return render_template('errors/500.html', content=trans('internal_error', default='Internal server error')), 500
     
     @app.route('/static/<path:filename>')
     def static_files(filename):
@@ -991,27 +733,6 @@ def create_app():
                 session['lang'] = request.accept_languages.best_match(['en', 'ha'], 'en')
                 logger.info(f"Set default language to {session['lang']}")
             g.logger = logger
-            if current_user.is_authenticated:
-                if 'session_id' not in session:
-                    session['session_id'] = str(uuid.uuid4())
-                db = get_mongo_db()
-                user = db.users.find_one({'_id': current_user.id})
-                if user and not user.get('setup_complete', False):
-                    allowed_endpoints = [
-                        'users_bp.personal_setup_wizard',
-                        'users_bp.setup_wizard',
-                        'users_bp.agent_setup_wizard',
-                        'users_bp.logout',
-                        'settings_bp.profile',
-                        'coins_bp.purchase',
-                        'coins_bp.get_balance',
-                        'set_language'
-                    ]
-                    if request.endpoint not in allowed_endpoints:
-                        flash(trans('setup_required', default='Please complete your profile setup'), 'warning')
-                        if current_user.role == 'agent':
-                            return redirect(url_for('users_bp.agent_setup_wizard'))
-                        return redirect(url_for('users_bp.personal_setup_wizard'))
         except Exception as e:
             logger.error(f"Error in before_request: {str(e)}", exc_info=True)
     
